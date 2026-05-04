@@ -2,7 +2,7 @@
 
 Host-side bash that drives a live, rooted MTK device through ADB: pulls the `BT_Addr` and `WIFI` files, hands each to `mac_tool.py` to rewrite, pushes them back through `su`, offers to reboot. Mirrors the structure of `live_patch.sh` (the IMEI side) — short and linear; the binary-format and checksum knowledge lives in `mac_tool.py`, this script is plumbing.
 
-> **Scope reminder:** verified live on **F21 Pro / Android 11 + Magisk only**. Other MT67xx devices (F25, TIQ M5, …) are unverified for WiFi/BT MAC patching at this time.
+> **Scope reminder:** verified live on **F21 Pro** and **F25**. TIQ M5 is unverified for WiFi/BT MAC patching at this time.
 
 ## Header
 

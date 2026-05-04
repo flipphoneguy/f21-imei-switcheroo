@@ -4,7 +4,7 @@ Reads and writes the WiFi MAC and Bluetooth address inside an MTK NVRAM `BT_Addr
 
 The file is short by design. The MTK NVRAM trailer-byte algorithm (the only non-trivial piece) is in `compute_checksum`; everything else is byte-shuffling and CLI plumbing. See [`wifi_bt_reverse_engineering.md`](wifi_bt_reverse_engineering.md) for the algorithm's provenance.
 
-> **Scope reminder:** Only **F21 Pro** has been verified end-to-end on hardware. The format constants below match what's on the live F21 Pro's `/vendor/lib64/libnvram.so`; whether they're identical on F25 / TIQ M5 / other MT67xx devices is unverified.
+> **Scope reminder:** verified end-to-end on hardware for **F21 Pro** and **F25**. TIQ M5 is offline-compatible (partition format and round-trip verified) but unverified on hardware. The format constants below match what's on F21 Pro's `/vendor/lib64/libnvram.so`; the F25 WIFI header variant (`01 00 09 00`) is supported via `WIFI_HDR_VARIANTS`.
 
 ## Imports
 
