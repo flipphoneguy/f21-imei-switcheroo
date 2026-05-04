@@ -91,7 +91,13 @@ The trailer-byte algorithm (the only non-trivial piece) was recovered by disasse
 
 **Offline partition compatibility verified for F21 Pro, TIQ M5, and F25.** `mac_tool.py` recognizes BT_Addr / WIFI records on all three (the regression sweep `tests/mac_tool_edge_cases.sh` includes byte-identical full-image round-trip tests for each when the partition dumps are present in `tmp/{wifi_bt_re,tiqm5,f25}/`). F25's WIFI uses a slightly different header (`01 00 09 00` instead of `01 00 08 00`) — `mac_tool.py`'s `WIFI_HDR_VARIANTS` accepts both. See [`docs/tiq_m5_offline_analysis.md`](docs/tiq_m5_offline_analysis.md) and [`docs/f25_offline_analysis.md`](docs/f25_offline_analysis.md) for the per-device offline RE.
 
-**Live-device verification** confirmed on **F21 Pro** and **F25**. TIQ M5 has not yet been exercised on hardware end-to-end; per the project rule on per-device verification, treat live-device patching on TIQ M5 as unverified until run on hardware. The offline-tool side of the pipeline is uniformly covered for all three.
+**Live-device verification** confirmed on **F21 Pro**, **F25**, and **TIQ M5**.
+
+- **F21 Pro** — exercised end-to-end via this repo's `live_patch_mac.sh` and `mac_tool.py` + `fastboot flash nvdata` flows.
+- **F25** — confirmed via both this repo's `live_patch_mac.sh` and an end-user running [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app).
+- **TIQ M5** — confirmed via an end-user running `flipphoneguy/mtk-imei-switcheroo-app`. The app's `MacCrypto.java` is a Java port of `mac_tool.py` and is empirically bit-for-bit equivalent on real partition samples (see [Related](#related)) — same `compute_checksum` algorithm, same `BT_Addr` / `WIFI` files patched. A successful patch through the app exercises the same algorithm `mac_tool.py` would.
+
+The offline-tool side of the pipeline (`mac_tool.py read` / `write` + round-trip identity in `tests/mac_tool_edge_cases.sh`) is uniformly covered for all three.
 
 > ⚠ Modifying an IMEI, Bluetooth, or WiFi MAC is illegal in some jurisdictions. You are responsible for checking your local laws and using this tool accordingly.
 

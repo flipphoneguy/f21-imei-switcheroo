@@ -2,7 +2,7 @@
 
 Host-side bash that drives a live, rooted MTK device through ADB: pulls the `BT_Addr` and `WIFI` files, hands each to `mac_tool.py` to rewrite, pushes them back through `su`, offers to reboot. Mirrors the structure of `live_patch.sh` (the IMEI side) — short and linear; the binary-format and checksum knowledge lives in `mac_tool.py`, this script is plumbing.
 
-> **Scope reminder:** verified live on **F21 Pro** and **F25**. TIQ M5 is unverified for WiFi/BT MAC patching at this time.
+> **Scope reminder:** this script (`live_patch_mac.sh`) has been exercised on **F21 Pro** and **F25** hardware end-to-end. TIQ M5 has been confirmed via the Java app port (`flipphoneguy/mtk-imei-switcheroo-app`, which uses the same algorithm), but `live_patch_mac.sh` itself has not yet been run on TIQ M5 hardware.
 
 ## Header
 

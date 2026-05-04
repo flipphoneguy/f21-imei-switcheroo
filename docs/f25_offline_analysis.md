@@ -2,7 +2,7 @@
 
 A determination of `mac_tool.py` / `live_patch_mac.sh` compatibility on the **DuoQin F25** (dual-SIM), reached entirely from offline analysis of partition dumps. **No live F25 device was connected.** Every output below is a real run; nothing is illustrative.
 
-> **Status — offline-compatible after a small mac_tool.py extension; subsequently confirmed working on F25 hardware.** F25's BT_Addr file uses the exact same format and trailer-checksum algorithm as F21 Pro and TIQ M5. F25's WIFI file uses a **different header magic** at offset 2: `01 00 09 00` instead of the F21 Pro / TIQ M5 `01 00 08 00`. The trailer-checksum algorithm is the same (verified by 3 valid F25 WIFI copies all matching). `mac_tool.py` was extended in the same change-set as this doc to accept both header variants — `WIFI_HDR_VARIANTS = (bytes.fromhex('01000800'), bytes.fromhex('01000900'))`. After the extension, both `read` and `write` recognize F25 WIFI records (verified — full nvdata round-trip is byte-identical). Hardware patching subsequently confirmed working on F25.
+> **Status — offline-compatible after a small mac_tool.py extension; subsequently confirmed working on F25 hardware via both `live_patch_mac.sh` and the Java app port.** F25's BT_Addr file uses the exact same format and trailer-checksum algorithm as F21 Pro and TIQ M5. F25's WIFI file uses a **different header magic** at offset 2: `01 00 09 00` instead of the F21 Pro / TIQ M5 `01 00 08 00`. The trailer-checksum algorithm is the same (verified by 3 valid F25 WIFI copies all matching). `mac_tool.py` was extended in the same change-set as this doc to accept both header variants — `WIFI_HDR_VARIANTS = (bytes.fromhex('01000800'), bytes.fromhex('01000900'))`. After the extension, both `read` and `write` recognize F25 WIFI records (verified — full nvdata round-trip is byte-identical). Hardware patching subsequently confirmed both via `live_patch_mac.sh` directly and via end-user usage of `flipphoneguy/mtk-imei-switcheroo-app`.
 
 ## Source material
 
@@ -205,9 +205,9 @@ build/TK_MD_BASIC/LWTG_6177M_6769/rel/L4/csm/ss/applib2_asn_memory.c
 
 ## Determination
 
-**For BT_Addr patching on F25**: every offline check passes, identical to F21 Pro / TIQ M5. `mac_tool.py write` round-trips byte-identically. Hardware patching confirmed working on F25.
+**For BT_Addr patching on F25**: every offline check passes, identical to F21 Pro / TIQ M5. `mac_tool.py write` round-trips byte-identically. Hardware patching confirmed both via this repo's `live_patch_mac.sh` and via end-user usage of `flipphoneguy/mtk-imei-switcheroo-app`.
 
-**For WIFI patching on F25**: supported by `mac_tool.py` after the `WIFI_HDR_VARIANTS` extension. `mac_tool.py read tmp/f25/nvdata.bin` finds 2 WIFI copies; `mac_tool.py write … --wifi …` patches them; full-image round-trip is byte-identical (covered by `tests/mac_tool_edge_cases.sh`'s "F25 nvdata full round-trip" assertion). Hardware patching confirmed working on F25.
+**For WIFI patching on F25**: supported by `mac_tool.py` after the `WIFI_HDR_VARIANTS` extension. `mac_tool.py read tmp/f25/nvdata.bin` finds 2 WIFI copies; `mac_tool.py write … --wifi …` patches them; full-image round-trip is byte-identical (covered by `tests/mac_tool_edge_cases.sh`'s "F25 nvdata full round-trip" assertion). Hardware patching confirmed both via `live_patch_mac.sh` and via end-user usage of `flipphoneguy/mtk-imei-switcheroo-app`.
 
 The F25 BT MAC `10:df:8b:b1:53:cc` and WIFI MAC `10:df:8b:29:96:be` share the OUI `10:df:8b` with each other and with F21 Pro's factory MACs — strong evidence the WiFi/BT combo chipset is shared across this device family even though the SoC differs (MT6761 vs MT6768).
 
