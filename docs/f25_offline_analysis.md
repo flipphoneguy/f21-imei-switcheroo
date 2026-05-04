@@ -1,6 +1,6 @@
 # DuoQin F25 — offline analysis of pulled partitions
 
-A determination of `mac_tool.py` / `live_patch_mac.sh` compatibility on the **DuoQin F25** (dual-SIM), reached entirely from offline analysis of partition dumps. **No live F25 device was connected.** Every output below is a real run; nothing is illustrative.
+An offline analysis of `mac_tool.py` / `live_patch_mac.sh` compatibility on the **DuoQin F25** (dual-SIM), reached from partition dumps before any live F25 device was connected. F25 hardware patching has since been confirmed — see the **Status** banner directly below. The analysis steps that follow are recorded as they were performed against the partition dumps. Every output reproduced in this doc is a real run; nothing is illustrative.
 
 > **Status — offline-compatible after a small mac_tool.py extension; subsequently confirmed working on F25 hardware via both `live_patch_mac.sh` and the Java app port.** F25's BT_Addr file uses the exact same format and trailer-checksum algorithm as F21 Pro and TIQ M5. F25's WIFI file uses a **different header magic** at offset 2: `01 00 09 00` instead of the F21 Pro / TIQ M5 `01 00 08 00`. The trailer-checksum algorithm is the same (verified by 3 valid F25 WIFI copies all matching). `mac_tool.py` was extended in the same change-set as this doc to accept both header variants — `WIFI_HDR_VARIANTS = (bytes.fromhex('01000800'), bytes.fromhex('01000900'))`. After the extension, both `read` and `write` recognize F25 WIFI records (verified — full nvdata round-trip is byte-identical). Hardware patching subsequently confirmed both via `live_patch_mac.sh` directly and via end-user usage of `flipphoneguy/mtk-imei-switcheroo-app`.
 
@@ -173,7 +173,7 @@ WIFI diff total: 73
   in trailer cs byte (2049): 1
 ```
 
-The header difference is exactly one byte. The cal-body diff (68 bytes) is larger than F21-vs-F30 (6 bytes) and TIQ-M5-vs-F21 (6 bytes), reflecting that F25 runs on a different SoC (MT6768 vs MT6761) and has its own per-build cal table.
+The header difference is exactly one byte. The cal-body diff (68 bytes) is larger than TIQ-M5-vs-F21 (6 bytes — see [`tiq_m5_offline_analysis.md` § Step 5](tiq_m5_offline_analysis.md#step-5--cross-product-byte-comparison-tiq-m5-vs-f21-pro)) and far larger than F21-vs-F30 (cal body byte-identical; only 4 total bytes differ, all in MAC + trailer — see [`wifi_bt_reverse_engineering.md` § Step 1](wifi_bt_reverse_engineering.md#step-1--the-trailer-is-not-just-decoration)), reflecting that F25 runs on a different SoC (MT6768 vs MT6761) and has its own per-build cal table.
 
 ## Step 6 — `nvram` partition layout
 

@@ -222,7 +222,7 @@ EOF
 else
     echo ""
     echo "== Skipping real-device cases (no ADB device in 'device' state) =="
-    echo "   To exercise: connect a rooted F21 Pro and re-run this driver."
+    echo "   To exercise: connect a rooted MTK device (F21 Pro / F25 / TIQ M5) and re-run this driver."
 fi
 
 echo ""

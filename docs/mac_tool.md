@@ -132,7 +132,7 @@ All input errors die with a single line beginning `Error: …`. Exit code 0 on s
 | File missing | `file not found: <path>` |
 | Empty file (0 bytes) | `file is 0 bytes; expected 440 (BT_Addr), 2050 (WIFI), or > 1 MiB (partition image)` |
 | 440-byte file w/o BT trailer fingerprint | `file is 440 bytes (BT_Addr-shaped) but the trailer signature at offset 0x6 does not match …` |
-| 2050-byte file w/o WIFI header magic | `file is 2050 bytes (WIFI-shaped) but the header magic does not match 01000800` |
+| 2050-byte file w/o WIFI header magic | `file is 2050 bytes (WIFI-shaped) but the header magic does not match 01000800 or 01000900` |
 | Other non-matching size | `file is N bytes; expected 440 (BT_Addr), 2050 (WIFI), or > 1 MiB (partition image)` |
 | Bad MAC, wrong number of parts | `MAC must be six colon-separated hex bytes (e.g. 02:11:22:33:44:55), got '…' (N parts)` |
 | Bad MAC, non-hex character | `MAC contains non-hex characters: '…' (expected 0-9, a-f, A-F)` |
@@ -156,7 +156,7 @@ When `find_bt_copies` / `find_wifi_copies` find a signature hit but the trailer'
 
 ### Regression sweep
 
-`tests/mac_tool_edge_cases.sh` runs every case above plus round-trip identity (patch → patch back → byte-equal to original) and the partition-image edge cases. Requires the live samples in `tmp/wifi_bt_re/` (a pulled `BT_Addr.bin`, `WIFI.bin`, and `live_nvram.img` — produced as a side effect of running `live_patch_mac.sh` and pulling `nvram` once). 33 cases, exit 0 on full pass.
+`tests/mac_tool_edge_cases.sh` runs every case above plus round-trip identity (patch → patch back → byte-equal to original) and the partition-image edge cases. Requires the live samples in `tmp/wifi_bt_re/` (a pulled `BT_Addr.bin`, `WIFI.bin`, and `live_nvram.img` — produced as a side effect of running `live_patch_mac.sh` and pulling `nvram` once). Multi-device round-trip cases for TIQ M5 and F25 also run automatically when `tmp/tiqm5/nvdata.bin` and `tmp/f25/nvdata.bin` are present. **38 cases** when all three sample sets are present (33 base + 1 TIQ M5 read + 1 TIQ M5 round-trip + 2 F25 read + 1 F25 round-trip), exit 0 on full pass.
 
 ## Quick recipes
 

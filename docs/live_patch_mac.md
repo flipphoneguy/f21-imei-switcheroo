@@ -34,7 +34,7 @@ WIFI_PATCHED="$WORK/patched_WIFI.bin"
 |---|---|
 | `SCRIPT_DIR` | Absolute dir of `live_patch_mac.sh`, resolves under symlinks / relative invocations. |
 | `TOOL` | `mac_tool.py` next to the script. |
-| `BT_PATH` / `WIFI_PATH` | On-device paths. Hardcoded — these are the canonical MTK locations for the F21 Pro / MT6761 platform. |
+| `BT_PATH` / `WIFI_PATH` | On-device paths. Hardcoded — these are the canonical MTK locations on every device verified so far (F21 Pro, F25, TIQ M5). |
 | `DEVICE_TMP` | On-device staging dir (`/data/local/tmp`, world-writable, su-friendly). |
 | `WORK` | Host-side staging dir, always `./tmp/` relative to the user's CWD. Idempotent. |
 | `BT_BACKUP` / `WIFI_BACKUP` | The pulled files (one each, even if the user only patches one). Always 440 / 2050 bytes if the pull succeeded. |
@@ -175,7 +175,7 @@ The patched files are now on the device's filesystem, but the BT and WiFi stacks
 
 ## Failure modes
 
-Every `die()` path has been triggered live and the resulting message captured. The driver `tests/live_patch_mac_preflight.sh` reproduces them all using real `adb` (against the live device) for the host-environment cases plus a small mocked `adb` (in `/tmp/fakebin`, transient) for the device-side cases that would otherwise need physical disruption to set up. Re-running it asserts each error message comes out as documented.
+Every `die()` path has been triggered live and the resulting message captured. The driver `tests/live_patch_mac_preflight.sh` reproduces them all using real `adb` (against the live device) for the host-environment cases plus a small mocked `adb` (in a per-run `mktemp -d` directory, cleaned up on exit) for the device-side cases that would otherwise need physical disruption to set up. Re-running it asserts each error message comes out as documented.
 
 | Symptom | Trigger | Suggested fix |
 |---|---|---|
@@ -199,7 +199,7 @@ Every `die()` path has been triggered live and the resulting message captured. T
 | `BT_Addr unchanged. WIFI unchanged. No changes made.` (clean exit, no reboot prompt) | Both prompts answered `n` | Script exits 0 without offering reboot. |
 | Only BT patched (`tmp/patched_BT_Addr.bin` exists, `tmp/patched_WIFI.bin` does not) | First prompt `y`, second prompt `n` | The patched BT_Addr is pushed to the device; WIFI is left as it was. |
 | Only WiFi patched (`tmp/patched_WIFI.bin` exists, `tmp/patched_BT_Addr.bin` does not) | First prompt `n`, second prompt `y` | Mirror of the above. |
-| Both patched | Both prompts `y` | Both pushed. End-to-end reboot verification confirms BT directly via `settings get secure bluetooth_address` (byte-matches `BT_Addr[0:6]`); WiFi indirectly via the WIFI file persisting across reboot byte-for-byte and the daemon's `NVM_CheckFile` not triggering rollback. Android's per-interface MAC randomization on `wlan0` and `p2p0` means there's no direct `wlan0/address`-level runtime read of the patched MAC on this Android version — the kernel WiFi driver does load the patched bytes (`wlan_assistant` is the documented consumer) but they're masked behind the netdev randomization layer. |
+| Both patched | Both prompts `y` | Both pushed. End-to-end reboot verification confirms BT directly via `settings get secure bluetooth_address` (byte-matches `BT_Addr[0:6]`). WiFi has Android's per-SSID randomization on `wlan0` by default, but with `MacRandomizationSetting=0` set on the active saved network (Settings → Wi-Fi → network → Privacy → "Use device MAC", or one `sed` against `WifiConfigStore.xml` + reboot) the `cat /sys/class/net/wlan0/address` and `dumpsys wifi`'s `mWifiInfo MAC` both byte-match the patched `WIFI[4:10]`. With randomization back on, the Android layer hides the patched MAC behind a per-network random one, but the kernel chipset perm address (loaded from the patched file) is unchanged. |
 
 ## Artifacts after a run
 
