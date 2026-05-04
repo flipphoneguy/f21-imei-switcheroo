@@ -9,10 +9,10 @@ Read and write IMEI(s) in the NVRAM `LD0B_001` file on **DuoQin F21 Pro** (singl
 ```bash
 git clone https://github.com/alltechdev/mtk-imei-switcheroo
 cd mtk-imei-switcheroo
-pip install pycryptodome
+pip install pycryptodome    # only needed for the IMEI tools (imei_tool.py / live_patch.sh)
 ```
 
-That's it. Then run `./live_patch.sh` for the interactive flow, or call `python3 imei_tool.py` directly. Needs Python 3.6+; for live patching you also need `adb` (and `fastboot` if you'd rather flash the partition image).
+Then run `./live_patch.sh` for the interactive IMEI flow, or call `python3 imei_tool.py` directly. The WiFi/BT tools (`mac_tool.py` / `live_patch_mac.sh`) are stdlib-only and work without `pycryptodome`. All four need Python 3.6+; live patching also needs `adb` (and `fastboot` if you'd rather flash the partition image offline).
 
 ## How it works
 
@@ -55,6 +55,40 @@ The tool auto-detects whether the input is a standalone `LD0B_001` or a partitio
 - **F21 Pro (Android 11), live device** — end-to-end verified with random IMEIs via both paths: `live_patch.sh` (push patched `LD0B_001` back through ADB) and `fastboot flash nvdata` of a partition image patched offline by `imei_tool.py`. Slot 1 patches persisted across reboot and appeared in `iphonesubinfo`. Slot 2 reads as `(empty)` on this single-SIM device.
 - **F25 (dual-SIM), firmware image only** — `imei_tool.py read`, `write -s 1`, and `write -s 2` exercised against `LD0B_001` extracted from the stock F25 firmware ZIP. Both slots decrypt cleanly with the same AES key, both produce modem-valid MD5-XOR checksums when re-encoded, and both round-trip through `encrypt → decrypt → BCD-decode`. **No F25 hardware was tested**; live-write and reboot behavior on F25 has not been confirmed.
 - **TIQ M5 (dual-SIM, MT6761), live device** — `nvdata.bin` pulled via mtkclient, both slots patched offline with `imei_tool.py write -s 1` / `-s 2`, patched image flashed back via mtkclient, device booted. Both IMEIs read back as the written value on-device, confirming the modem accepts patched bytes at runtime. This is the first dual-SIM device validated end-to-end on hardware. Surfaced a bug in `_patch_all_copies` (now fixed) where same-header copies with body differences were being homogenized — see [`docs/reverse_engineering.md` § Hardware validation (TIQ M5)](docs/reverse_engineering.md#hardware-validation-tiq-m5-dual-sim). Subsequently, `./live_patch.sh` ran end-to-end on the same device: dual-SIM `[1/2/n]` prompt routed correctly, slot 1 and slot 2 each patched independently across separate runs (the other slot byte-identical post-patch), file md5 matches across reboot in both runs (modem persists). The script's pull mechanism was extended during this verification to handle a CRLF-injection observation on this device's Android 13 + Magisk combo (see the same RE doc section).
+
+## WiFi MAC and Bluetooth address (F21 Pro only — `feat/wifi-bt`)
+
+The same NVRAM family also stores the WiFi MAC and Bluetooth address, plaintext but checksum-validated by the MTK NVRAM daemon. `mac_tool.py` (offline) and `live_patch_mac.sh` (live device) handle these the same way `imei_tool.py` / `live_patch.sh` handle IMEI.
+
+```bash
+# Offline read / write — operates on host-side files. The on-device source
+# files live at /mnt/vendor/nvdata/APCFG/APRDEB/BT_Addr (440 bytes) and
+# /mnt/vendor/nvdata/APCFG/APRDEB/WIFI (2050 bytes); pull them to the host
+# via the binary-safe pattern in docs/live_patch.md before reading them
+# locally, or pass a partition image (nvram.img / nvdata.img) directly.
+python3 mac_tool.py read BT_Addr
+python3 mac_tool.py read WIFI
+python3 mac_tool.py read nvdata.img
+
+python3 mac_tool.py write BT_Addr --bt   02:11:22:33:44:55 -o BT_Addr.patched
+python3 mac_tool.py write WIFI    --wifi 02:11:22:33:44:66 -o WIFI.patched
+python3 mac_tool.py write nvdata.img --bt   02:11:22:33:44:55 \
+                                     --wifi 02:11:22:33:44:66 -o nvdata.patched.img
+
+# Live device flow (interactive). Pulls, patches, pushes, offers reboot.
+./live_patch_mac.sh
+```
+
+`live_patch_mac.sh` asks two independent prompts — `Change BT MAC? [y/N]` and `Change WiFi MAC? [y/N]` — so a single run can change BT only, WiFi only, both, or neither. If neither, the script exits without offering a reboot. The 6-byte MAC is validated client-side against `^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$` (colon or dash separators).
+
+The trailer-byte algorithm (the only non-trivial piece) was recovered by disassembling `_Z18NVM_ComputeCheckNoPKcPcb` in `/vendor/lib64/libnvram.so` on the F21 Pro: walk the file excluding the last 2 bytes, ADD on even-indexed bytes, XOR on odd-indexed bytes, store the low 8 bits as the trailer byte after a fixed `0xaa` magic. Full step-by-step trace in [`docs/wifi_bt_reverse_engineering.md`](docs/wifi_bt_reverse_engineering.md). Reference docs: [`docs/mac_tool.md`](docs/mac_tool.md) and [`docs/live_patch_mac.md`](docs/live_patch_mac.md). The stock F30 partition images used as a known-good reference came from the classic "F30 US LTE Bands Package" originally posted on XDA — F30 and F21 Pro share the MT6761 platform and the same NVRAM record layouts.
+
+**Verification status — F21 Pro / Android 11 + Magisk only.** Two paths verified on hardware:
+
+1. **ADB push path** (`live_patch_mac.sh`): patched APRDEB files with `02:11:22:33:44:55` (BT) / `02:11:22:33:44:66` (WiFi); both survived reboot byte-identical, `settings get secure bluetooth_address` reported the new BT MAC, BT and WiFi stacks initialized cleanly. Subsequent runs verified the BT-only, WiFi-only, and "no changes" branches of the prompt logic, and a separate run verified that BT-then-WiFi across two consecutive script invocations both persist across the same reboot.
+2. **fastboot flash path** (offline `mac_tool.py write nvdata.img …`): patched a pulled `nvdata.img` with `02:aa:bb:cc:dd:ee` (BT) / `02:aa:bb:cc:dd:ff` (WiFi), `fastboot flash nvdata nvdata_patched.img`, rebooted, verified the post-flash `BT_Addr` and `WIFI` files via `mac_tool.py read` (matching what was patched) and the runtime BT MAC via `settings get secure bluetooth_address` (`02:AA:BB:CC:DD:EE`).
+
+**F25, TIQ M5, and any other MT67xx device are not yet tested for WiFi/BT MAC patching.** Whether the format constants and `NVM_ComputeCheckNo` algorithm carry over unchanged to those devices is plausible (they share the MTK MOLY codebase the F21 Pro's `libnvram.so` came from) but unverified — until each is run end-to-end on hardware (re-disassemble that device's `libnvram.so`, dump a known-good `BT_Addr`/`WIFI`, confirm `mac_tool.py`'s computed checksum matches the stored trailer), treat them as unsupported.
 
 ## Related
 
