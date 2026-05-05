@@ -41,6 +41,22 @@ pull_to_host() {
     adb shell su -c "rm '$stage'" </dev/null >/dev/null 2>&1
 }
 
+sync_android_wifi_factory_mac() {
+    local new_mac
+    new_mac=$(echo "$1" | tr 'A-Z' 'a-z' | tr '-' ':')
+    cat > "$WORK/wcs_sync.sh" << 'EOS'
+#!/system/bin/sh
+WCS=/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml
+NEW="$1"
+[ -f "$WCS" ] || exit 0
+grep -qE '<string name="wifi_sta_factory_mac_address">[0-9a-fA-F:]{17}</string>' "$WCS" || exit 0
+sed -i -E 's|<string name="wifi_sta_factory_mac_address">[^<]*</string>|<string name="wifi_sta_factory_mac_address">'"$NEW"'</string>|' "$WCS"
+EOS
+    adb push "$WORK/wcs_sync.sh" /data/local/tmp/wcs_sync.sh </dev/null >/dev/null 2>&1
+    adb shell su -c "sh /data/local/tmp/wcs_sync.sh '$new_mac'; rm /data/local/tmp/wcs_sync.sh" </dev/null >/dev/null 2>&1
+    rm -f "$WORK/wcs_sync.sh"
+}
+
 adb_state=$(adb devices 2>/dev/null | awk 'NR>1 && NF{print $2}' | head -1)
 if [ -z "$adb_state" ]; then
     die "No ADB device detected. Plug in the device and ensure USB debugging is enabled."
@@ -90,6 +106,7 @@ case "$ans" in
         python3 "$TOOL" write "$WIFI_BACKUP" --wifi "$new_wf" -o "$WIFI_PATCHED" \
             || die "WIFI patch failed — see mac_tool.py output above. The pulled backup is at $WIFI_BACKUP for inspection."
         push_replace "$WIFI_PATCHED" WIFI.new "$WIFI_PATH" system
+        sync_android_wifi_factory_mac "$new_wf"
         ;;
     *) echo "  WIFI unchanged." ;;
 esac

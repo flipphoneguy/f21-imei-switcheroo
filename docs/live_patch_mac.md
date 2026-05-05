@@ -2,7 +2,7 @@
 
 Host-side bash that drives a live, rooted MTK device through ADB: pulls the `BT_Addr` and `WIFI` files, hands each to `mac_tool.py` to rewrite, pushes them back through `su`, offers to reboot. Mirrors the structure of `live_patch.sh` (the IMEI side) — short and linear; the binary-format and checksum knowledge lives in `mac_tool.py`, this script is plumbing.
 
-> **Scope reminder.** This script (`live_patch_mac.sh`) has been exercised on **F21 Pro**, **F25**, and **TIQ M5** hardware. On F21 Pro and F25 it works end-to-end for both BT and WiFi MAC. On TIQ M5 it works end-to-end for **BT only** — for **WiFi**, the file is patched correctly (byte-perfect, daemon validates) but the runtime MAC the AP sees stays at whatever the Java app port (`flipphoneguy/mtk-imei-switcheroo-app`) last wrote, because the chipset firmware on this M5 build holds the runtime WiFi MAC in an on-die cache that this script's identical-from-the-outside flow cannot reach. Full investigation: [`tiq_m5_mac_live_findings.md`](tiq_m5_mac_live_findings.md).
+> **Scope reminder.** This script (`live_patch_mac.sh`) is verified end-to-end on **F21 Pro**, **F25**, and **TIQ M5** hardware for both BT and WiFi MAC patching. On Android 12+ devices (F25 and TIQ M5 in our test set), the WiFi side additionally needs Android's `WifiConfigStore.xml` cache to be invalidated for the runtime MAC to reflect the new file MAC; the script does this in `sync_android_wifi_factory_mac` (see [§ `sync_android_wifi_factory_mac(new_mac)`](#sync_android_wifi_factory_macnew_mac)). Credit for that fix goes to the Java port [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app) — the port (which uses this repo's algorithms and primitives as its base) discovered the Android 12+ WCS-cache behavior while testing on F25 and added `RootRunner.syncAndroidWifiFactoryMac` in [v1.0.6](https://github.com/flipphoneguy/mtk-imei-switcheroo-app/commit/060697aae1167e3ef217bf7f58fcf867c0a79d9f); the bash equivalent here is a port back. The behavior is Android-version-specific, not device-specific — the cache lives in `WifiConfigStore.xml` regardless of chipset, and TIQ M5 (where most of the saga in `tiq_m5_mac_live_findings.md` was filmed) hits the exact same code path as F25. Background and the saga of finding this: [`tiq_m5_mac_live_findings.md`](tiq_m5_mac_live_findings.md).
 
 ## Header
 
@@ -85,6 +85,38 @@ adb shell su -c "rm '$DEVICE_TMP/$name'" </dev/null >/dev/null 2>&1
 Same three-things-deliberate as `live_patch.sh`: `</dev/null` on every adb invocation (so piping the script's stdin through prompts doesn't get consumed by adb), defensive `mount -o remount,rw` for hypothetical Magisk/SELinux configurations that route writes through the root namespace, and separate `adb shell su -c` calls (chained `cp && chmod && chown && rm` was observed to fail in the IMEI work). Only `cp` dies on failure; chmod/chown/rm are best-effort. All on-device path arguments are single-quoted within the `su -c` string to keep the shell parsing predictable even though `BT_PATH` / `WIFI_PATH` / `DEVICE_TMP` have no whitespace.
 
 The mode `0660` and `chown root:<group>` match the original on-device ownership: `BT_Addr` is `root:bluetooth`, `WIFI` is `root:system`. The kernel and userspace consumers verify the mode at boot, so this matters even if the file content is otherwise correct.
+
+### `sync_android_wifi_factory_mac(new_mac)`
+
+```bash
+sync_android_wifi_factory_mac() {
+    local new_mac
+    new_mac=$(echo "$1" | tr 'A-Z' 'a-z' | tr '-' ':')
+    cat > "$WORK/wcs_sync.sh" << 'EOS'
+#!/system/bin/sh
+WCS=/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml
+NEW="$1"
+[ -f "$WCS" ] || exit 0
+grep -qE '<string name="wifi_sta_factory_mac_address">[0-9a-fA-F:]{17}</string>' "$WCS" || exit 0
+sed -i -E 's|<string name="wifi_sta_factory_mac_address">[^<]*</string>|<string name="wifi_sta_factory_mac_address">'"$NEW"'</string>|' "$WCS"
+EOS
+    adb push "$WORK/wcs_sync.sh" /data/local/tmp/wcs_sync.sh </dev/null >/dev/null 2>&1
+    adb shell su -c "sh /data/local/tmp/wcs_sync.sh '$new_mac'; rm /data/local/tmp/wcs_sync.sh" </dev/null >/dev/null 2>&1
+    rm -f "$WORK/wcs_sync.sh"
+}
+```
+
+Best-effort sync of Android's cached factory WiFi MAC. Called only after a successful WiFi MAC patch (after `push_replace` for `WIFI`).
+
+**Why this exists.** On Android 12+ (verified on F25 and on TIQ M5 / Android 13), `WifiService` caches the chipset's reported "factory MAC" the **first time it sees it** in `<string name="wifi_sta_factory_mac_address">` inside `/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml`, and uses that cached value for "use device MAC" mode and as the seed for per-SSID MAC randomization. Patching the on-disk `WIFI` file changes what the chipset reports as factory MAC on the next boot, but Android keeps using the stale cached value — so the runtime MAC the AP sees stays at whatever the cache holds, regardless of what the file holds. Sed-replacing the cached value (in-place, in the same `<string>` tag) lines the cache up with the file, and after the next reboot the runtime MAC matches the patched file. Without this step, `live_patch_mac.sh` would patch the file correctly on Android 12+ devices (which it does, byte-identical, daemon validates) but the runtime MAC would persist at the previous-cached value across reboots.
+
+This was solved by the Java port [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app) — the port uses this repo's algorithms and primitives, and added `RootRunner.syncAndroidWifiFactoryMac` in [v1.0.6](https://github.com/flipphoneguy/mtk-imei-switcheroo-app/commit/060697aae1167e3ef217bf7f58fcf867c0a79d9f) after the maintainer (running F25) hit the cached-MAC behavior and identified the WCS field as the source; the bash function above is a port of that fix back into this repo's script. Credit for the cache fix is theirs. The behavior is Android-version-specific (Android 12+), not device-specific — same code path on F25 and TIQ M5.
+
+**Why it's best-effort and not a `die` path.** On Android 11 (verified on F21 Pro), `WifiConfigStore.xml` exists but does not contain the `wifi_sta_factory_mac_address` field — that field was added in Android 12+. The function checks for the file's existence, then for the field's presence (`grep -qE '<string name=...'`), and silently returns 0 if either is missing. On F21 Pro this is a no-op; on F25 and TIQ M5 it does the substitution.
+
+**Why a pushed script instead of an inline `adb shell su -c "..."` one-liner.** The sed pattern contains literal `<` and `>` plus `"` characters. Quoting that through `host bash → adb → device sh → su -c sh` is fragile — the literal `"` inside the outer `"..."` of `su -c` breaks the device-side shell parser (e.g. `<string name="wifi_..."` is read as a redirection). Pushing a script file to `/data/local/tmp/wcs_sync.sh` and invoking it via `sh /data/local/tmp/wcs_sync.sh '<new_mac>'` sidesteps the multi-shell quoting entirely; the script content is single-quoted-heredoc'd so bash on the host doesn't expand it either.
+
+**Limitation: this only fires from the live `live_patch_mac.sh` flow.** The offline patch + `fastboot flash nvdata` path does not invoke this — there is no script at fastboot time. On Android 11 devices that doesn't matter (no cache to update). On Android 12+ devices, after `fastboot flash nvdata` of an offline-patched image, the on-disk `WIFI` file holds the new MAC but `WifiConfigStore.xml`'s `wifi_sta_factory_mac_address` still holds the previously-cached value, so the runtime WiFi MAC stays at the cached value. To get the runtime updated on Android 12+ after `fastboot flash`, either also run `live_patch_mac.sh` once (it patches the file with the same MAC and runs the sync), or manually edit the field with the same `sed` invocation the function uses.
 
 ## Preflight checks
 
@@ -175,7 +207,7 @@ The patched files are now on the device's filesystem, but the BT and WiFi stacks
 
 ## Failure modes
 
-Every `die()` path has been triggered live and the resulting message captured. The driver `tests/live_patch_mac_preflight.sh` reproduces them all using real `adb` (against the live device) for the host-environment cases plus a small mocked `adb` (in a per-run `mktemp -d` directory, cleaned up on exit) for the device-side cases that would otherwise need physical disruption to set up. Re-running it asserts each error message comes out as documented.
+Every `die()` path **listed below** has been triggered live and the resulting message captured. The driver `tests/live_patch_mac_preflight.sh` reproduces these using real `adb` (against the live device) for the host-environment cases plus a small mocked `adb` (in a per-run `mktemp -d` directory, cleaned up on exit) for the device-side cases that would otherwise need physical disruption to set up. Re-running it asserts each error message comes out as documented. (The script has one additional `die` for `adb push <local> /data/local/tmp/<name>` failure, not exercised by the test driver — it requires `/data/local/tmp` to be unwritable on a rooted device, which doesn't happen in normal use.)
 
 | Symptom | Trigger | Suggested fix |
 |---|---|---|
@@ -199,7 +231,7 @@ Every `die()` path has been triggered live and the resulting message captured. T
 | `BT_Addr unchanged. WIFI unchanged. No changes made.` (clean exit, no reboot prompt) | Both prompts answered `n` | Script exits 0 without offering reboot. |
 | Only BT patched (`tmp/patched_BT_Addr.bin` exists, `tmp/patched_WIFI.bin` does not) | First prompt `y`, second prompt `n` | The patched BT_Addr is pushed to the device; WIFI is left as it was. |
 | Only WiFi patched (`tmp/patched_WIFI.bin` exists, `tmp/patched_BT_Addr.bin` does not) | First prompt `n`, second prompt `y` | Mirror of the above. |
-| Both patched | Both prompts `y` | Both pushed. End-to-end reboot verification confirms BT directly via `settings get secure bluetooth_address` (byte-matches `BT_Addr[0:6]`) — works on F21 Pro, F25, **and TIQ M5**. WiFi runtime confirmation is **device-dependent**: on F21 Pro and F25, with `MacRandomizationSetting=0` set on the active saved network (Settings → Wi-Fi → network → Privacy → "Use device MAC", or one `sed` against `WifiConfigStore.xml` + reboot) the `cat /sys/class/net/wlan0/address` and `dumpsys wifi`'s `mWifiInfo MAC` both byte-match the patched `WIFI[4:10]`; with randomization back on, the Android layer hides the patched MAC behind a per-network random one, but the kernel chipset perm address (loaded from the patched file) is unchanged. **On TIQ M5, this WiFi runtime read does NOT match the patched file** because the chipset firmware on that build holds the runtime WiFi MAC in an on-die cache the script's flow cannot update — see the Scope reminder at the top of this doc and [`tiq_m5_mac_live_findings.md`](tiq_m5_mac_live_findings.md). The file-level patch persists on M5 the same way (daemon validates, no rollback). |
+| Both patched | Both prompts `y` | Both pushed. End-to-end reboot verification confirms BT directly via `settings get secure bluetooth_address` (byte-matches `BT_Addr[0:6]`) on F21 Pro, F25, and TIQ M5. WiFi runtime: with `MacRandomizationSetting=0` set on the active saved network (Settings → Wi-Fi → network → Privacy → "Use device MAC", or one `sed` against `WifiConfigStore.xml` + reboot), `cat /sys/class/net/wlan0/address` and `dumpsys wifi`'s `mWifiInfo MAC` both byte-match the patched `WIFI[4:10]` — verified on F21 Pro, F25, and TIQ M5. With randomization back on, the Android layer hides the patched MAC behind a per-network random one. (Android 12+ devices — F25 and TIQ M5 in our test set — require the [`sync_android_wifi_factory_mac`](#sync_android_wifi_factory_macnew_mac) step the script does after the WIFI cp; without it the WiFi runtime would keep using Android's stale cached factory MAC. The step is a silent no-op on F21 Pro / Android 11.) |
 
 ## Artifacts after a run
 

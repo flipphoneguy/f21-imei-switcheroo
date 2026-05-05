@@ -2,12 +2,15 @@
 
 A companion to [`tiq_m5_offline_analysis.md`](tiq_m5_offline_analysis.md), this doc records what was observed running this repo's BT and WiFi MAC patching flow against a connected **TIQ M5** (MT6761, dual-SIM, Android 13 + Magisk). Every output reproduced below is from a real run; nothing is illustrative.
 
-> **Headline.**
+> **Headline — RESOLVED.**
 >
-> - **BT MAC patching works end-to-end via `live_patch_mac.sh`.** Verified live across multiple reboot cycles: `BT_Addr` file persists byte-identical, the MTK NVRAM daemon validates the trailer, and `settings get secure bluetooth_address` returns the patched MAC byte-for-byte every time. Same behavior as on F21 Pro and F25.
-> - **WiFi MAC patching writes the file correctly but does not update the runtime MAC.** The kernel WiFi driver loads the patched MAC into the wiphy at boot (visible in `dmesg`), but the chipset firmware's on-die cache — which Android's WiFi HAL queries for the "factory MAC" — keeps serving whatever was last written through the Java app port [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app), regardless of file content, partition flashes, or reboots. The app port uses the same algorithm and the same on-device primitives as `live_patch_mac.sh`; we could not identify what its `cp` does differently from the script's `cp` such that it reaches the chipset's cache. Working hypothesis is in [§ Working hypothesis](#working-hypothesis) below.
+> Both BT and WiFi MAC patching work end-to-end on TIQ M5 via `live_patch_mac.sh`. The path that took most of this investigation to find: on Android 12+ (TIQ M5 / Android 13), `WifiService` caches the chipset's reported "factory MAC" the first time it sees it, in `<string name="wifi_sta_factory_mac_address">` inside `/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml`, and uses that cached value for "use device MAC" mode and as the seed for per-SSID MAC randomization. After the file is patched the chipset reports the new MAC at the next boot, but Android keeps using the cached value — so the runtime MAC stays stale until the cache is invalidated. The fix is a sed substitution against that one `<string>` tag, run after the `cp` of the patched WIFI file. The script's `sync_android_wifi_factory_mac` does this; on Android 11 (F21 Pro) the field doesn't exist and the function silently no-ops.
 >
-> F21 Pro and F25 do not exhibit this asymmetry — `live_patch_mac.sh` updates WiFi runtime there as expected.
+> **Credit for the fix goes to the Java port [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app)** — the port (which uses this repo's algorithms and primitives as its base) discovered the Android 12+ WCS-cache behavior while testing on F25 and added `RootRunner.syncAndroidWifiFactoryMac` in [v1.0.6](https://github.com/flipphoneguy/mtk-imei-switcheroo-app/commit/060697aae1167e3ef217bf7f58fcf867c0a79d9f). The bash equivalent in `live_patch_mac.sh` is a port of that fix back into this repo. The behavior is Android-version-specific, not chipset- or device-specific — F25 and TIQ M5 both run Android 12+ and both hit the same `WifiConfigStore.xml` code path; the saga in this doc happens to have been filmed on the M5 because that's what was on the desk, but every observation about the cache (and the fix) applies to F25 identically.
+>
+> **What was wrong with my earlier investigation in this doc:** I framed the cause as a "chipset firmware on-die cache" because I had searched `/data/misc` and `WifiConfigStore.xml` for the cached MAC bytes as a binary needle (`\x02\x11\x33\x84\x7c\x0c`), but the file stores the MAC as the **ASCII string** `02:11:33:84:7c:0c`. The byte-level grep missed it. The "ruled-out hypotheses" table below was correct on each individual entry but I was looking for the cache in the wrong representation; the rest of this doc is preserved as a record of the saga, not as current claims.
+>
+> **Limitation that remains:** the offline patch + `fastboot flash nvdata` path patches the file on TIQ M5 but does **not** invalidate the `WifiConfigStore.xml` cache (no Android process is running at fastboot time); on Android 12+ the runtime stays at the cached value until either `live_patch_mac.sh` is run once after boot or the field is sed-edited manually. On F21 Pro / Android 11 the field doesn't exist so this limitation doesn't apply.
 
 ## Status
 
@@ -19,7 +22,8 @@ A companion to [`tiq_m5_offline_analysis.md`](tiq_m5_offline_analysis.md), this 
 | WiFi MAC read | `mac_tool.py read WIFI` | works |
 | WiFi MAC **file** write (live) | `live_patch_mac.sh` | works — file persists byte-identical, daemon's `NVM_CheckFile` accepts it |
 | WiFi MAC **file** write (offline + flash) | `mac_tool.py write nvdata.img` + `fastboot flash nvdata` | works — partition block holds the patched MAC in every signature-matching copy (verified by post-flash `dd`) |
-| WiFi MAC **runtime** propagation | `live_patch_mac.sh` or `fastboot flash nvdata` | **does not update runtime MAC** — see [§ The WiFi runtime quirk](#the-wifi-runtime-quirk) |
+| WiFi MAC **runtime** propagation (live patch) | `live_patch_mac.sh` (incl. `sync_android_wifi_factory_mac`) | **works end-to-end — verified.** After reboot, `wlan0/address`, `dumpsys wifi`'s `mWifiInfo MAC`, and ARP TX SRC MAC all reflect the patched `WIFI[4:10]`. |
+| WiFi MAC **runtime** propagation (offline + flash) | `mac_tool.py write nvdata.img` + `fastboot flash nvdata` (no live step) | **does not update runtime MAC on Android 12+** — `fastboot flash` does not invalidate Android's `WifiConfigStore.xml` cache. Run `live_patch_mac.sh` once after boot, or sed-edit the `wifi_sta_factory_mac_address` field manually. |
 
 ## BT — verified working
 
@@ -49,7 +53,9 @@ File persists byte-identical across reboot, daemon's trailer-checksum validates,
 
 ## The WiFi runtime quirk
 
-### Layer-by-layer: where the chain breaks
+> **Historical — preserved as a record of the saga, not as current claims.** Everything in this section was written while pursuing the wrong cause (a chipset on-die cache). The actual cause is Android 12+'s `WifiConfigStore.xml` `wifi_sta_factory_mac_address` cache — see the headline. The "ruled-out hypotheses" table below is correct on each row, but the byte-level grep for the cached MAC missed the WCS file because the value is stored as the ASCII string `02:11:33:84:7c:0c`, not the binary bytes `\x02\x11\x33\x84\x7c\x0c`. With the WCS sync step (`sync_android_wifi_factory_mac` in `live_patch_mac.sh`), every "no" in the layer table below becomes "yes" on the next reboot, on TIQ M5 just as on F25.
+
+### Layer-by-layer: where the chain broke (pre-fix)
 
 Patching with `live_patch_mac.sh` (or with `mac_tool.py write nvdata.img --wifi <X>` + `fastboot flash nvdata`) propagates the new MAC through every layer we can inspect — except the chipset's internal cache, which is what Android's HAL ultimately reports.
 
@@ -150,11 +156,11 @@ This is **not a bug in `live_patch_mac.sh`**. The script writes byte-perfect fil
 
 | Want to change | Use |
 |---|---|
-| Bluetooth MAC | `live_patch_mac.sh` from this repo |
-| WiFi MAC at the file level (for inspection / forensics) | `live_patch_mac.sh` works fine |
-| WiFi MAC at the runtime level (what the AP / router actually sees) | The Java app port [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app), installed as an APK and run on-device |
+| Bluetooth MAC | `live_patch_mac.sh` from this repo. |
+| WiFi MAC (file + runtime) | `live_patch_mac.sh` from this repo. The script patches `WIFI` and then runs `sync_android_wifi_factory_mac` to invalidate Android 12+'s `WifiConfigStore.xml` cache so the runtime MAC tracks the file. |
+| Either via an Android app (no host required) | The Java port [`flipphoneguy/mtk-imei-switcheroo-app`](https://github.com/flipphoneguy/mtk-imei-switcheroo-app), installed as an APK and run on-device. The app uses this repo's algorithms and primitives — its `MacCrypto.java` is a Java port of `mac_tool.compute_checksum`, its `RootRunner.replaceFile` runs the same `mount -o remount,rw → cp → chmod 660 → chown root:system` sequence, and its `RootRunner.syncAndroidWifiFactoryMac` performs the equivalent WCS-cache update. |
 
-The app's source code states it is a Java wrapper around this repo's logic — its `MacCrypto.java` is a Java port of `mac_tool.compute_checksum`, and its `RootRunner.replaceFile` runs the same `mount -o remount,rw → cp → chmod 660 → chown root:system` sequence. On F21 Pro and F25 either path works. On TIQ M5 only the app's path updates the chipset's on-die cache; the script's identical-from-the-outside path does not.
+**Limitation: offline + `fastboot flash nvdata`.** The offline path patches the file but does not invalidate the WCS cache (no Android process running at fastboot time). On TIQ M5 / Android 13 (and on F25 / Android 12+), after `fastboot flash nvdata` of an offline-patched image, the runtime WiFi MAC stays at the previously-cached value until either `live_patch_mac.sh` is run once after boot or the field is sed-edited manually. On F21 Pro / Android 11 the WCS field doesn't exist and the offline path produces a runtime-correct WiFi MAC on its own.
 
 ## How to reproduce
 
@@ -180,7 +186,12 @@ The app's source code states it is a Java wrapper around this repo's logic — i
    python3 mac_tool.py read tmp/nvdata_post.img
    # → WIFI MAC (N copies, first @ ...): 02:11:33:55:77:99
    ```
-5. Verify the runtime MAC (what the AP sees):
+5. Verify the WCS cache is in sync with the file:
+   ```
+   adb shell su -c "grep -E 'wifi_sta_factory_mac_address' /data/misc/apexdata/com.android.wifi/WifiConfigStore.xml"
+   # → <string name="wifi_sta_factory_mac_address">02:11:33:55:77:99</string>
+   ```
+6. Verify the runtime MAC (what the AP sees):
    ```
    adb shell svc wifi enable
    sleep 20
@@ -190,15 +201,15 @@ The app's source code states it is a Java wrapper around this repo's logic — i
    adb shell 'dumpsys wifi 2>/dev/null | grep -E "mWifiInfo MAC" | head -1'
    adb shell su -c 'dmesg 2>/dev/null | grep "ARP REQ SRC MAC" | tail -1'
    ```
-   On TIQ M5, the runtime MAC is whatever the **app port** last wrote, **not** `02:11:33:55:77:99`. On F21 Pro running the same flow, the runtime MAC is `02:11:33:55:77:99`.
+   All three reads should be `02:11:33:55:77:99` on TIQ M5 (with `MacRandomizationSetting=0` on the connected SSID), matching the file in step 3 and the WCS field in step 5. Same flow gives the same result on F25 / Android 12+ and on F21 Pro / Android 11 — on F21 Pro the WCS field doesn't exist so step 5 prints nothing, and step 6 still matches because Android 11 reads the chipset MAC fresh on each session rather than cached.
 
-Then install the Java app port APK on the TIQ M5, open it, type a new WiFi MAC, tap **Apply WiFi**, tap **Reboot**. After boot, repeat step 5. The runtime MAC is now the value the app wrote.
+To reproduce the **pre-fix** state for comparison: revert `live_patch_mac.sh` to a commit before `sync_android_wifi_factory_mac` was added, run the same flow on the M5, and observe that step 6's reads will be the previously-cached MAC, not the patched value — exactly the symptom the [§ The WiFi runtime quirk](#the-wifi-runtime-quirk) historical section documents.
 
 ## Hardware context relevant to this finding
 
-- **WiFi/BT chipset**: MT6635-class connac1x (driver `wlan_drv_gen4m`, BT driver `bt_drv_connac1x`). The chipset's eFuse-default MAC observed on this device is `00:08:22:04:81:fd` (OUI `00:08:22` is registered to InProComm, now MediaTek). This default reappears at runtime whenever the chipset's on-die cache has not yet been programmed by the app port.
+- **WiFi/BT chipset**: MT6635-class connac1x (driver `wlan_drv_gen4m`, BT driver `bt_drv_connac1x`). The chipset's eFuse-default MAC observed on this device is `00:08:22:04:81:fd` (OUI `00:08:22` is registered to InProComm, now MediaTek). This default appears at runtime when the WIFI file's MAC field is the all-zero unprovisioned state and the WCS cache hasn't been written to yet.
 - **SoC**: MT6761 — confirmed via consys chipid `0x6761` and the `md1img_a` banner `LR12A.R3.MP MT6761 / MT6761_S00`.
-- **Magisk**: present; policy DB at `/data/adb/magisk.db`. Both shell uid 2000 and the app uid 10154 have `policy=2 (allow)` with identical `logging`, `notification`, and `until` fields.
-- **Android version**: 13. Both `adb exec-out` CRLF injection and `chown` on app-cache files via `su` exhibit the Android 13 + Magisk quirks documented elsewhere in this repo; they are unrelated to the MAC runtime issue.
+- **Magisk**: present; policy DB at `/data/adb/magisk.db`. Both shell uid 2000 and the app uid 10154 have `policy=2 (allow)` with identical `logging`, `notification`, and `until` fields. (The historical-section "Working hypothesis" speculated this was the differentiator. With the WCS-cache cause now identified, the Magisk policy difference is a red herring.)
+- **Android version**: 13. Both `adb exec-out` CRLF injection and `chown` on app-cache files via `su` exhibit the Android 13 + Magisk quirks documented elsewhere in this repo; they are unrelated to the WCS-cache cause.
 
 For the rest of the partition layout, the AllMap/AllFile structure, the per-record offsets, and the per-device byte comparison, see [`tiq_m5_offline_analysis.md`](tiq_m5_offline_analysis.md). For the WiFi/BT NVRAM record format and the trailer-checksum algorithm, see [`wifi_bt_reverse_engineering.md`](wifi_bt_reverse_engineering.md).
