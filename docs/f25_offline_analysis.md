@@ -4,6 +4,8 @@ An offline analysis of `mac_tool.py` / `live_patch_mac.sh` compatibility on the 
 
 > **Status — offline-compatible after a small mac_tool.py extension; subsequently confirmed working on F25 hardware via both `live_patch_mac.sh` and the Java app port.** F25's BT_Addr file uses the exact same format and trailer-checksum algorithm as F21 Pro and TIQ M5. F25's WIFI file uses a **different header magic** at offset 2: `01 00 09 00` instead of the F21 Pro / TIQ M5 `01 00 08 00`. The trailer-checksum algorithm is the same (verified by 3 valid F25 WIFI copies all matching). `mac_tool.py` was extended in the same change-set as this doc to accept both header variants — `WIFI_HDR_VARIANTS = (bytes.fromhex('01000800'), bytes.fromhex('01000900'))`. After the extension, both `read` and `write` recognize F25 WIFI records (verified — full nvdata round-trip is byte-identical). Hardware patching subsequently confirmed both via `live_patch_mac.sh` directly and via end-user usage of `flipphoneguy/mtk-imei-switcheroo-app`.
 
+For the **IMEI**-side per-device analysis on F25 (firmware-image checks of the AES key, slot offsets, MD5-XOR checksum, plus the live hardware confirmation via this repo's `live_patch.sh` and the Java app port), see [`reverse_engineering.md` § Cross-device validation (F25)](reverse_engineering.md#cross-device-validation-f25). This doc is the **MAC**-side companion.
+
 ## Source material
 
 A directory of partitions pulled from an F25 (origin not recorded in the dump). Contents:

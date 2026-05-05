@@ -4,6 +4,8 @@ An offline analysis of `mac_tool.py` / `live_patch_mac.sh` compatibility on the 
 
 > **Status:** the on-disk format, the AllMap index format, the BT_Addr / WIFI signatures, and the trailer-checksum algorithm are byte-for-byte compatible with what was verified end-to-end on F21 Pro. Round-trip integrity through `mac_tool.py` is byte-clean for both standalone files and the full 64 MiB `nvdata.bin`. **Live-device confirmed on TIQ M5 (partial)**: BT MAC patching via `live_patch_mac.sh` works end-to-end (file persists, daemon validates, `settings get secure bluetooth_address` reflects the patched value across reboots); WiFi MAC patching writes a byte-perfect file the daemon accepts, but the chipset firmware on this M5 build holds the runtime WiFi MAC in an on-die cache that only the Java app port (`flipphoneguy/mtk-imei-switcheroo-app`) can update — `live_patch_mac.sh` does not, even though it uses the same algorithm and the same on-device primitives. Full live findings, ruled-out hypotheses, and reproduction steps: [`tiq_m5_mac_live_findings.md`](tiq_m5_mac_live_findings.md). The offline analysis below was performed before live testing; the open-question section is preserved as it was written, with the live-test update stated under [Resolution](#resolution-of-the-open-question).
 
+For the **IMEI**-side per-device analysis on TIQ M5 (live IMEI patching via this repo's `live_patch.sh`, the `_patch_all_copies` bug surfaced and fixed by this device, the bad-checksum modem behavior, and the CRLF-injection layer), see [`reverse_engineering.md` § Hardware validation (TIQ M5, dual-SIM)](reverse_engineering.md#hardware-validation-tiq-m5-dual-sim). This doc is the **MAC**-side companion.
+
 ## Source material
 
 A single zip pulled with mtkclient from a TIQ M5: `pulledwithmtkclienttiqm5.zip`. Extracted contents:
@@ -79,18 +81,19 @@ This is direct evidence the trailer algorithm is the same on TIQ M5 as on F21 Pr
 Pulling `/vendor/lib64/libnvram.so` from M5 and F21 Pro and disassembling `_Z18NVM_ComputeCheckNoPKcPcb` confirms instruction-level equivalence of the loop body — same opcodes in the same order, same register roles (only the loop-counter register differs: F21 Pro uses `w23`, M5 uses `w22`):
 
 ```
-F21 Pro libnvram.so @ 0x126c0     M5 libnvram.so @ 0x16310
-   ldurb w8, [x29, #-0xc]            ldrb  w8, [sp, #0x4]      ; read 1 byte → w8
-   tst   w24, #0x1                   tst   w24, #0x1           ; test parity bit
-   eor   w24, w24, #0x1               eor   w24, w24, #0x1      ; toggle parity for next iter
-   eor   w9, w21, w8                 eor   w9, w21, w8         ; cs ^ byte (odd-index path)
-   add   w8, w21, w8                 add   w8, w21, w8         ; cs + byte (even-index path)
-   csel  w21, w9, w8, ne             csel  w21, w9, w8, ne     ; pick XOR if parity_was_odd, else ADD
-   subs  w23, w23, #0x1              subs  w22, w22, #0x1      ; decrement counter
-   b.ne  loop                        b.ne  loop
+F21 Pro inner loop (within 0x126c0–0x126f4):    M5 inner loop (within 0x16310–0x16344):
+  read(fd, &byte, 1)                              read(fd, &byte, 1)
+  ldurb w8, [x29, #-0xc]    ; load read result    ldrb  w8, [sp, #0x4]      ; load read result
+  tst   w24, #0x1           ; test parity bit     tst   w24, #0x1           ; test parity bit
+  eor   w24, w24, #0x1      ; toggle parity       eor   w24, w24, #0x1      ; toggle parity
+  eor   w9, w21, w8         ; cs ^ byte           eor   w9, w21, w8         ; cs ^ byte
+  add   w8, w21, w8         ; cs + byte           add   w8, w21, w8         ; cs + byte
+  csel  w21, w9, w8, ne     ; XOR if odd, ADD     csel  w21, w9, w8, ne     ; XOR if odd, ADD
+  subs  w23, w23, #0x1      ; counter--           subs  w22, w22, #0x1      ; counter--
+  b.ne  loop                                       b.ne  loop
 ```
 
-Same `csel ... ne` selecting between the XOR result (`w9 = cs ^ byte`) and the ADD result (`w8 = cs + byte`) based on parity, same `eor wN, wN, #0x1` toggle on the parity-tracking register. M5's daemon's `NVM_CheckFile` therefore validates files against the exact same byte-level checksum that `mac_tool.compute_checksum` produces. (The "exclude_last_2" handling earlier in the function — which selects `size - 2` vs `size` for the loop count via `csel wN, w9, w8, ne` under `tst w21, #0x1` — is also identical between the two builds.)
+Same `csel ... ne` selecting between the XOR result (`w9 = cs ^ byte`) and the ADD result (`w8 = cs + byte`) based on parity, same `eor wN, wN, #0x1` toggle on the parity-tracking register, same loop counter and conditional branch back. M5's daemon's `NVM_CheckFile` therefore validates files against the exact same byte-level checksum that `mac_tool.compute_checksum` produces. (The "exclude_last_2" handling earlier in the function — which selects `size - 2` vs `size` for the loop count via `csel wN, w9, w8, ne` under `tst w21, #0x1` — is also identical between the two builds.)
 
 This independently confirms what Step 2's empirical check above already showed: `mac_tool.py write` produces files M5's daemon validates and accepts (no rollback). The WiFi runtime quirk on M5 (see [`tiq_m5_mac_live_findings.md`](tiq_m5_mac_live_findings.md)) is therefore **not** a daemon-level disagreement — it is downstream of the daemon, in the chipset firmware's on-die cache that Android's WiFi HAL queries via NL80211 vendor command.
 
